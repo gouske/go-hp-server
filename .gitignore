@@ -1,0 +1,20 @@
+# 바이너리
+/bin/
+*.exe
+
+# 설정 파일 (시크릿 포함 가능)
+config/local.yaml
+*.env
+.env.*
+
+# 테스트 결과
+coverage.out
+*.test
+
+# k6 결과
+k6/results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
