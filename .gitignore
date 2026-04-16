@@ -18,3 +18,15 @@ k6/results/
 .idea/
 .vscode/
 *.swp
+
+# Claude Code
+# .claude/ 전체를 차단하되, 팀/오픈소스 공유용 파일만 예외로 추적한다.
+# 주의: `.claude/` 가 아니라 `.claude/*` 로 써야 `!` 예외 규칙이 동작한다
+#       (Git 은 부모 디렉토리가 제외되면 하위를 re-include 하지 못한다).
+.claude/*
+!.claude/commands/
+!.claude/agents/
+!.claude/settings.json
+
+# ETC
+docs/*

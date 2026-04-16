@@ -47,7 +47,9 @@ PROMPT_EOF
 )
 
 echo "🤖 Codex 실행 중..."
-RESULT=$(codex "$PROMPT" 2>&1)
+# codex 0.120+ 는 인자만 주면 인터랙티브 TUI 로 진입해 non-TTY 스크립트에서는
+# 조용히 종료된다. 비대화형 실행은 반드시 `codex exec` 를 사용한다.
+RESULT=$(codex exec "$PROMPT" 2>&1)
 
 echo "$RESULT"
 
