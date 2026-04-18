@@ -27,6 +27,10 @@ type Config struct {
 }
 
 // ServerConfig 는 HTTP 서버 바인딩 주소 및 타임아웃 설정이다.
+//
+// ReadHeaderTimeout 과 MaxHeaderBytes 는 slowloris / 헤더 폭탄 방어의
+// 보안 한계값으로, 반드시 양수여야 한다. server 패키지에서는
+// Option > Config > 내장 기본값 순서로 값을 결정한다.
 type ServerConfig struct {
 	Host                    string        `mapstructure:"host"`
 	Port                    int           `mapstructure:"port"`
@@ -34,6 +38,8 @@ type ServerConfig struct {
 	WriteTimeout            time.Duration `mapstructure:"write_timeout"`
 	IdleTimeout             time.Duration `mapstructure:"idle_timeout"`
 	GracefulShutdownTimeout time.Duration `mapstructure:"graceful_shutdown_timeout"`
+	ReadHeaderTimeout       time.Duration `mapstructure:"read_header_timeout"`
+	MaxHeaderBytes          int           `mapstructure:"max_header_bytes"`
 }
 
 // WorkerPoolConfig 는 Worker Pool 크기 및 대기열 설정이다.
@@ -117,7 +123,8 @@ func Load(path string) (*Config, error) {
 // 검사 규칙:
 //   - Server.Host: 공백이 아님
 //   - Server.Port: 1..65535
-//   - Server.*Timeout: > 0
+//   - Server.*Timeout: > 0 (ReadHeaderTimeout 포함)
+//   - Server.MaxHeaderBytes: > 0
 //   - WorkerPool.Size: > 0
 //   - WorkerPool.QueueSize: >= 0
 //   - RateLimiter: Enabled=true 일 때 requests_per_second>0, burst>0
@@ -146,6 +153,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.GracefulShutdownTimeout <= 0 {
 		return fmt.Errorf("config validate: server.graceful_shutdown_timeout must be > 0: %s", c.Server.GracefulShutdownTimeout)
+	}
+	if c.Server.ReadHeaderTimeout <= 0 {
+		return fmt.Errorf("config validate: server.read_header_timeout must be > 0: %s", c.Server.ReadHeaderTimeout)
+	}
+	if c.Server.MaxHeaderBytes <= 0 {
+		return fmt.Errorf("config validate: server.max_header_bytes must be > 0: %d", c.Server.MaxHeaderBytes)
 	}
 	if c.WorkerPool.Size <= 0 {
 		return fmt.Errorf("config validate: worker_pool.size must be > 0: %d", c.WorkerPool.Size)

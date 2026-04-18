@@ -21,6 +21,8 @@ server:
   write_timeout: 30s
   idle_timeout: 120s
   graceful_shutdown_timeout: 30s
+  read_header_timeout: 5s
+  max_header_bytes: 1048576
 
 worker_pool:
   size: 100
@@ -82,6 +84,8 @@ func TestLoad_Success(t *testing.T) {
 		{"server.write_timeout", cfg.Server.WriteTimeout, 30 * time.Second},
 		{"server.idle_timeout", cfg.Server.IdleTimeout, 120 * time.Second},
 		{"server.graceful_shutdown_timeout", cfg.Server.GracefulShutdownTimeout, 30 * time.Second},
+		{"server.read_header_timeout", cfg.Server.ReadHeaderTimeout, 5 * time.Second},
+		{"server.max_header_bytes", cfg.Server.MaxHeaderBytes, 1048576},
 		{"worker_pool.size", cfg.WorkerPool.Size, 100},
 		{"worker_pool.queue_size", cfg.WorkerPool.QueueSize, 10000},
 		{"rate_limiter.enabled", cfg.RateLimiter.Enabled, true},
@@ -199,6 +203,8 @@ server:
   write_timeout: 30s
   idle_timeout: 120s
   graceful_shutdown_timeout: 30s
+  read_header_timeout: 5s
+  max_header_bytes: 1048576
 worker_pool:
   size: 100
   queue_size: 10000
@@ -230,6 +236,8 @@ func validConfig() *Config {
 			WriteTimeout:            30 * time.Second,
 			IdleTimeout:             120 * time.Second,
 			GracefulShutdownTimeout: 30 * time.Second,
+			ReadHeaderTimeout:       5 * time.Second,
+			MaxHeaderBytes:          1 << 20, // 1 MiB
 		},
 		WorkerPool: WorkerPoolConfig{Size: 100, QueueSize: 10000},
 		Metrics:    MetricsConfig{Enabled: true, Path: "/metrics"},
@@ -297,6 +305,30 @@ func TestValidate(t *testing.T) {
 			mutate:  func(c *Config) { c.Server.GracefulShutdownTimeout = 0 },
 			wantErr: true,
 			wantSub: "server.graceful_shutdown_timeout",
+		},
+		{
+			name:    "read_header_timeout zero",
+			mutate:  func(c *Config) { c.Server.ReadHeaderTimeout = 0 },
+			wantErr: true,
+			wantSub: "server.read_header_timeout",
+		},
+		{
+			name:    "read_header_timeout negative",
+			mutate:  func(c *Config) { c.Server.ReadHeaderTimeout = -1 },
+			wantErr: true,
+			wantSub: "server.read_header_timeout",
+		},
+		{
+			name:    "max_header_bytes zero",
+			mutate:  func(c *Config) { c.Server.MaxHeaderBytes = 0 },
+			wantErr: true,
+			wantSub: "server.max_header_bytes",
+		},
+		{
+			name:    "max_header_bytes negative",
+			mutate:  func(c *Config) { c.Server.MaxHeaderBytes = -1 },
+			wantErr: true,
+			wantSub: "server.max_header_bytes",
 		},
 		{
 			name:    "worker_pool.size zero",
