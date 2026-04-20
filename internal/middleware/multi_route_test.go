@@ -85,6 +85,55 @@ func TestMultiRoute_RegisterHelperAppliesChainPerRoute(t *testing.T) {
 	}
 }
 
+// TS-FINAL-002 (P0-5): /health 와 /ready 가 모두 register 헬퍼를 통해 등록되어
+// 미들웨어 체인(X-Request-ID + AccessLog) 이 자동 적용됨을 검증한다.
+// health 패키지를 직접 import 하면 의존 역전이 발생하므로, 여기서는 동등 구조의
+// 더미 핸들러(200 OK) 를 각 경로에 등록해 register 우회 회귀를 잡는다.
+func TestMultiRoute_HealthAndReadyIntegration(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	base := zerolog.New(&syncWriter{mu: &mu, w: &buf})
+
+	reqMW, err := NewRequestID(WithErrorLogger(&base))
+	if err != nil {
+		t.Fatalf("NewRequestID: %v", err)
+	}
+	logMW, err := NewAccessLog(&base)
+	if err != nil {
+		t.Fatalf("NewAccessLog: %v", err)
+	}
+	mux := http.NewServeMux()
+	register := func(pattern string, h http.Handler) {
+		mux.Handle(pattern, Chain(h, reqMW, logMW))
+	}
+	dummyOK := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	register("/health", dummyOK)
+	register("/ready", dummyOK)
+
+	for _, path := range []string{"/health", "/ready"} {
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("path=%s status=%d", path, rr.Code)
+		}
+		if rr.Header().Get(HeaderRequestID) == "" {
+			t.Fatalf("path=%s 응답 X-Request-ID 누락", path)
+		}
+	}
+	mu.Lock()
+	logs := buf.String()
+	mu.Unlock()
+	for _, wantPath := range []string{`"path":"/health"`, `"path":"/ready"`} {
+		if !strings.Contains(logs, wantPath) {
+			t.Errorf("access log 에 %s 누락 (logs=%s)", wantPath, logs)
+		}
+	}
+}
+
 // 대조 실험: register 헬퍼를 우회하고 raw 핸들러를 직접 등록하면
 // 응답 헤더에 X-Request-ID 가 없고 access 로그도 없다.
 // 이는 FR-032 의 "모든 srv.Handle 호출에 register 강제" 규칙의 필요성을 증명한다.

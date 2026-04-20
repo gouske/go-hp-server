@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/gouske/go-hp-server/internal/config"
+	"github.com/gouske/go-hp-server/internal/health"
 	"github.com/gouske/go-hp-server/internal/logger"
 	"github.com/gouske/go-hp-server/internal/middleware"
 	"github.com/gouske/go-hp-server/internal/server"
@@ -105,11 +106,26 @@ func runCore(ctx context.Context, args []string) int {
 	}
 
 	// 루트 핸들러: P0-3 단계에서는 단순 204 No Content 를 반환한다.
-	// 후속 P0-5 에서 /health, /ready 가 추가되면 동일한 register 헬퍼로 등록한다.
 	if err := register("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})); err != nil {
 		lg.Error().Err(err).Msg("root handler register failed")
+		return exitCodeError
+	}
+
+	// P0-5: 헬스체크 엔드포인트. 체커는 본 단계에서 0개로 시작하며,
+	// P1-7 Connection Pool 부터 health.WithChecker 로 붙여나간다.
+	readinessHandler, err := health.Readiness(health.WithErrorLogger(lg))
+	if err != nil {
+		lg.Error().Err(err).Msg("health readiness init failed")
+		return exitCodeError
+	}
+	if err := register("/health", health.Liveness()); err != nil {
+		lg.Error().Err(err).Msg("health liveness register failed")
+		return exitCodeError
+	}
+	if err := register("/ready", readinessHandler); err != nil {
+		lg.Error().Err(err).Msg("health readiness register failed")
 		return exitCodeError
 	}
 
