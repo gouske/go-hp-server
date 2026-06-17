@@ -92,27 +92,55 @@ func TestNew_ConsoleFormat(t *testing.T) {
 	}
 }
 
-// TestNew_LevelFiltersLowerLevels 는 Level 이 warn 일 때 info/debug 이벤트가
-// 버려지고 warn 이상만 출력되는지 확인한다.
-func TestNew_LevelFiltersLowerLevels(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
+// TestNew_RespectsGlobalLevel 은 zerolog 전역 레벨이 warn 일 때 info/debug 이벤트가
+// 버려지고 warn 이상만 출력되는지 확인한다. P0-4(FR-060f) 이후 레벨 필터링은 per-logger
+// 고정값이 아니라 zerolog 전역 레벨이 단독으로 결정한다.
+//
+// 전역 상태를 변경하므로 t.Parallel 을 사용하지 않고 t.Cleanup 으로 원복한다.
+func TestNew_RespectsGlobalLevel(t *testing.T) {
+	prev := zerolog.GlobalLevel()
+	t.Cleanup(func() { zerolog.SetGlobalLevel(prev) })
 
-	lg, err := New(config.LogConfig{Level: "warn", Format: "json"}, WithWriter(&buf))
+	var buf bytes.Buffer
+	lg, err := New(config.LogConfig{Level: "debug", Format: "json"}, WithWriter(&buf))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
+	zerolog.SetGlobalLevel(zerolog.WarnLevel)
 	lg.Debug().Msg("dropped-debug")
 	lg.Info().Msg("dropped-info")
 	lg.Warn().Msg("kept-warn")
 
 	out := buf.String()
 	if strings.Contains(out, "dropped-debug") || strings.Contains(out, "dropped-info") {
-		t.Errorf("lower-level events should be filtered, got: %q", out)
+		t.Errorf("lower-level events should be filtered by global level, got: %q", out)
 	}
 	if !strings.Contains(out, "kept-warn") {
 		t.Errorf("warn event missing from output: %q", out)
+	}
+}
+
+// TestNew_DoesNotPinPerLoggerLevel 은 New 가 per-logger 레벨을 고정하지 않음을 검증한다
+// (REV5-001 전제). 전역 레벨을 debug 로 완화하면, cfg.Level=info 로 만든 로거도 debug
+// 이벤트를 출력해야 한다. per-logger 레벨이 고정돼 있으면 debug 이 info 필터에 막혀 실패한다.
+//
+// 전역 상태를 변경하므로 t.Parallel 을 사용하지 않고 t.Cleanup 으로 원복한다.
+func TestNew_DoesNotPinPerLoggerLevel(t *testing.T) {
+	prev := zerolog.GlobalLevel()
+	t.Cleanup(func() { zerolog.SetGlobalLevel(prev) })
+
+	var buf bytes.Buffer
+	lg, err := New(config.LogConfig{Level: "info", Format: "json"}, WithWriter(&buf))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	lg.Debug().Msg("relaxed-debug")
+
+	if !strings.Contains(buf.String(), "relaxed-debug") {
+		t.Errorf("expected debug emitted under global debug level; New must not pin per-logger level, got: %q", buf.String())
 	}
 }
 
@@ -200,6 +228,19 @@ func TestNew_StrictLevelFormat(t *testing.T) {
 				t.Errorf("err = %q, want substring %q", err.Error(), tc.wantSub)
 			}
 		})
+	}
+}
+
+// TestNew_NilOptionSkipped 는 nil Option 이 전달돼도 panic 없이 건너뛰는지 확인한다
+// (다른 생성자와의 일관성, Codex MINOR-1).
+func TestNew_NilOptionSkipped(t *testing.T) {
+	t.Parallel()
+	lg, err := New(config.LogConfig{Level: "info", Format: "json"}, nil)
+	if err != nil {
+		t.Fatalf("New(nil option) err = %v, want nil", err)
+	}
+	if lg == nil {
+		t.Fatal("New(nil option) returned nil logger")
 	}
 }
 

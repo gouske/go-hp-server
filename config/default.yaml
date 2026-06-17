@@ -9,6 +9,8 @@ server:
   read_header_timeout: 5s
   # 보안 한계값: 헤더 폭탄 방어용 최대 헤더 바이트(기본 1 MiB = 1048576)
   max_header_bytes: 1048576
+  # 핸들러 실행 deadline(hot-reload 가능). 소켓 I/O 타임아웃과는 별개 의미(P0-4).
+  request_timeout: 30s
 
 worker_pool:
   size: 100
@@ -28,6 +30,14 @@ circuit_breaker:
 metrics:
   enabled: true
   path: "/metrics"
+
+# 설정 hot-reload trigger 정책(P0-4).
+# sources: 자동 trigger 목록. ["sighup"](기본, 프로덕션 안전), ["sighup","file"] 로 파일 watch 추가,
+#          [] 로 자동 trigger 비활성화(수동 Trigger 호출은 여전히 허용).
+# debounce_ms: trigger 병합 창(ms). 에디터 atomic-save 연쇄 이벤트 흡수용(기본 200).
+reload:
+  sources: ["sighup"]
+  debounce_ms: 200
 
 log:
   level: "info"

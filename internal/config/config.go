@@ -23,6 +23,7 @@ type Config struct {
 	RateLimiter    RateLimiterConfig    `mapstructure:"rate_limiter"`
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
 	Metrics        MetricsConfig        `mapstructure:"metrics"`
+	Reload         ReloadConfig         `mapstructure:"reload"`
 	Log            LogConfig            `mapstructure:"log"`
 }
 
@@ -40,6 +41,22 @@ type ServerConfig struct {
 	GracefulShutdownTimeout time.Duration `mapstructure:"graceful_shutdown_timeout"`
 	ReadHeaderTimeout       time.Duration `mapstructure:"read_header_timeout"`
 	MaxHeaderBytes          int           `mapstructure:"max_header_bytes"`
+
+	// RequestTimeout 은 핸들러 실행 deadline 으로, hot-reload 가능 필드이다(P0-4 FR-060g).
+	// 소켓 I/O 타임아웃(Read/Write/IdleTimeout)과는 별개 의미이며, RequestTimeout 미들웨어가
+	// 요청마다 최신 값을 atomic 으로 읽어 context.WithTimeout 으로 적용한다.
+	RequestTimeout time.Duration `mapstructure:"request_timeout"`
+}
+
+// ReloadConfig 는 설정 hot-reload trigger 정책이다(P0-4).
+//
+// Sources 는 자동 trigger 종류 목록이며 빈 목록이면 자동 trigger 가 모두 비활성화된다
+// (이 경우에도 Reloader.Trigger 수동 호출은 허용). 구체적 값 화이트리스트({"sighup","file"})
+// 검증은 import cycle 회피를 위해 reload.NewReloader 에서 수행하고, 여기서는 기본 검증만 한다.
+// DebounceMs 는 trigger 병합(debounce) 창 길이(ms)이며 0 이면 즉시 dispatch(주로 테스트용)다.
+type ReloadConfig struct {
+	Sources    []string `mapstructure:"sources"`
+	DebounceMs int      `mapstructure:"debounce_ms"`
 }
 
 // WorkerPoolConfig 는 Worker Pool 크기 및 대기열 설정이다.
@@ -123,8 +140,10 @@ func Load(path string) (*Config, error) {
 // 검사 규칙:
 //   - Server.Host: 공백이 아님
 //   - Server.Port: 1..65535
-//   - Server.*Timeout: > 0 (ReadHeaderTimeout 포함)
+//   - Server.*Timeout: > 0 (ReadHeaderTimeout, RequestTimeout 포함)
 //   - Server.MaxHeaderBytes: > 0
+//   - Reload.Sources: 각 원소 비어있지 않음, 중복 원소 없음 (값 화이트리스트는 reload.NewReloader)
+//   - Reload.DebounceMs: >= 0
 //   - WorkerPool.Size: > 0
 //   - WorkerPool.QueueSize: >= 0
 //   - RateLimiter: Enabled=true 일 때 requests_per_second>0, burst>0
@@ -159,6 +178,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.MaxHeaderBytes <= 0 {
 		return fmt.Errorf("config validate: server.max_header_bytes must be > 0: %d", c.Server.MaxHeaderBytes)
+	}
+	if c.Server.RequestTimeout <= 0 {
+		return fmt.Errorf("config validate: server.request_timeout must be > 0: %s", c.Server.RequestTimeout)
+	}
+	if err := validateReload(c.Reload); err != nil {
+		return err
 	}
 	if c.WorkerPool.Size <= 0 {
 		return fmt.Errorf("config validate: worker_pool.size must be > 0: %d", c.WorkerPool.Size)
@@ -197,6 +222,27 @@ func (c *Config) Validate() error {
 	c.Log.Format = normFormat
 	if c.Metrics.Enabled && !strings.HasPrefix(c.Metrics.Path, "/") {
 		return fmt.Errorf("config validate: metrics.path must start with '/': %q", c.Metrics.Path)
+	}
+	return nil
+}
+
+// validateReload 는 ReloadConfig 의 기본 유효성을 검사한다(P0-4 FR-060i).
+//
+// 화이트리스트({"sighup","file"}) 검증은 import cycle 회피를 위해 reload.NewReloader 가
+// 담당하며, 여기서는 빈 원소 거부 · 중복 원소 거부 · debounce_ms >= 0 만 확인한다.
+func validateReload(rc ReloadConfig) error {
+	if rc.DebounceMs < 0 {
+		return fmt.Errorf("config validate: reload.debounce_ms must be >= 0: %d", rc.DebounceMs)
+	}
+	seen := make(map[string]struct{}, len(rc.Sources))
+	for _, s := range rc.Sources {
+		if strings.TrimSpace(s) == "" {
+			return errors.New("config validate: reload.sources must not contain empty element")
+		}
+		if _, dup := seen[s]; dup {
+			return fmt.Errorf("config validate: reload.sources must not contain duplicate element: %q", s)
+		}
+		seen[s] = struct{}{}
 	}
 	return nil
 }

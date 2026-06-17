@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gouske/go-hp-server/internal/config"
@@ -31,6 +32,10 @@ type Server struct {
 	// http.Server 에 주입되는 최종 값(Option > Config > Default 해석 후).
 	resolvedReadHeaderTimeout time.Duration
 	resolvedMaxHeaderBytes    int
+
+	// graceful shutdown 데드라인(ns). hot-reload 가능 필드(P0-4 FR-060h)이므로
+	// atomic 으로 보관하고, shutdown 진입 시 최신 값을 Load 한다. New 에서 cfg 값으로 초기화.
+	shutdownTimeoutNanos atomic.Int64
 
 	// 라우터 및 중복 패턴 검출용 집합(Handle 단계에서 사용).
 	mux      *http.ServeMux
@@ -65,7 +70,7 @@ func New(cfg *config.Config, logger *zerolog.Logger, opts ...Option) (*Server, e
 		}
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:                       cfg,
 		logger:                    logger,
 		injectedListener:          o.listener,
@@ -73,7 +78,9 @@ func New(cfg *config.Config, logger *zerolog.Logger, opts ...Option) (*Server, e
 		resolvedMaxHeaderBytes:    resolveMaxHeaderBytes(o.maxHeaderBytes, cfg.Server.MaxHeaderBytes),
 		mux:                       http.NewServeMux(),
 		patterns:                  make(map[string]struct{}),
-	}, nil
+	}
+	s.shutdownTimeoutNanos.Store(int64(cfg.Server.GracefulShutdownTimeout))
+	return s, nil
 }
 
 // Handle 은 path 패턴에 http.Handler 를 등록한다.
@@ -210,7 +217,9 @@ func (s *Server) Run(ctx context.Context) error {
 //   - serveErrCh 대기 또한 bounded select 로 제한한다. 주입 리스너가 끝내
 //     복귀를 거부하면 해당 고루틴은 leak 되지만 Run 은 반환을 보장한다.
 func (s *Server) gracefulShutdown(httpSrv *http.Server, serveErrCh <-chan error) error {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.Server.GracefulShutdownTimeout)
+	// hot-reload 로 갱신될 수 있으므로 shutdown 진입 시점에 최신 값을 Load 한다(FR-060h).
+	timeout := time.Duration(s.shutdownTimeoutNanos.Load())
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	shutdownDoneCh := make(chan error, 1)
@@ -260,6 +269,22 @@ func (s *Server) prepareListener() (net.Listener, error) {
 	}
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 	return net.Listen("tcp", addr)
+}
+
+// UpdateShutdownTimeout 은 graceful shutdown 데드라인을 atomic 으로 갱신한다(P0-4 FR-060h).
+// 진행 중인 shutdown 에는 영향이 없고 다음 shutdown 부터 반영된다.
+// d <= 0 이면 `server:` 접두 에러를 반환하고 기존 값을 유지한다. panic 하지 않는다.
+func (s *Server) UpdateShutdownTimeout(d time.Duration) error {
+	if d <= 0 {
+		return fmt.Errorf("server: shutdown timeout must be > 0, got %s", d)
+	}
+	s.shutdownTimeoutNanos.Store(int64(d))
+	return nil
+}
+
+// shutdownTimeout 은 현재 graceful shutdown 데드라인을 반환하는 내부 접근자다(테스트용).
+func (s *Server) shutdownTimeout() time.Duration {
+	return time.Duration(s.shutdownTimeoutNanos.Load())
 }
 
 // readHeaderTimeout 은 테스트에서 우선순위를 검증하기 위한 내부 접근자다.

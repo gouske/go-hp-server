@@ -23,6 +23,7 @@ server:
   graceful_shutdown_timeout: 30s
   read_header_timeout: 5s
   max_header_bytes: 1048576
+  request_timeout: 30s
 
 worker_pool:
   size: 100
@@ -42,6 +43,10 @@ circuit_breaker:
 metrics:
   enabled: true
   path: "/metrics"
+
+reload:
+  sources: ["sighup"]
+  debounce_ms: 200
 
 log:
   level: "info"
@@ -86,6 +91,8 @@ func TestLoad_Success(t *testing.T) {
 		{"server.graceful_shutdown_timeout", cfg.Server.GracefulShutdownTimeout, 30 * time.Second},
 		{"server.read_header_timeout", cfg.Server.ReadHeaderTimeout, 5 * time.Second},
 		{"server.max_header_bytes", cfg.Server.MaxHeaderBytes, 1048576},
+		{"server.request_timeout", cfg.Server.RequestTimeout, 30 * time.Second},
+		{"reload.debounce_ms", cfg.Reload.DebounceMs, 200},
 		{"worker_pool.size", cfg.WorkerPool.Size, 100},
 		{"worker_pool.queue_size", cfg.WorkerPool.QueueSize, 10000},
 		{"rate_limiter.enabled", cfg.RateLimiter.Enabled, true},
@@ -108,6 +115,11 @@ func TestLoad_Success(t *testing.T) {
 				t.Errorf("%s: got=%v, want=%v", tc.name, tc.got, tc.want)
 			}
 		})
+	}
+
+	// reload.sources 는 슬라이스라 비교 테이블에 넣지 않고 별도로 검증한다.
+	if len(cfg.Reload.Sources) != 1 || cfg.Reload.Sources[0] != "sighup" {
+		t.Errorf("reload.sources = %v, want [sighup]", cfg.Reload.Sources)
 	}
 }
 
@@ -238,10 +250,12 @@ func validConfig() *Config {
 			GracefulShutdownTimeout: 30 * time.Second,
 			ReadHeaderTimeout:       5 * time.Second,
 			MaxHeaderBytes:          1 << 20, // 1 MiB
+			RequestTimeout:          30 * time.Second,
 		},
 		WorkerPool: WorkerPoolConfig{Size: 100, QueueSize: 10000},
 		Metrics:    MetricsConfig{Enabled: true, Path: "/metrics"},
 		Log:        LogConfig{Level: "info", Format: "json"},
+		Reload:     ReloadConfig{Sources: []string{"sighup"}, DebounceMs: 200},
 	}
 }
 
@@ -329,6 +343,44 @@ func TestValidate(t *testing.T) {
 			mutate:  func(c *Config) { c.Server.MaxHeaderBytes = -1 },
 			wantErr: true,
 			wantSub: "server.max_header_bytes",
+		},
+		{
+			name:    "request_timeout zero",
+			mutate:  func(c *Config) { c.Server.RequestTimeout = 0 },
+			wantErr: true,
+			wantSub: "server.request_timeout",
+		},
+		{
+			name:    "request_timeout negative",
+			mutate:  func(c *Config) { c.Server.RequestTimeout = -1 },
+			wantErr: true,
+			wantSub: "server.request_timeout",
+		},
+		{
+			name:    "reload.sources empty element rejected",
+			mutate:  func(c *Config) { c.Reload.Sources = []string{"sighup", ""} },
+			wantErr: true,
+			wantSub: "reload.sources",
+		},
+		{
+			name:    "reload.sources duplicate element rejected",
+			mutate:  func(c *Config) { c.Reload.Sources = []string{"sighup", "sighup"} },
+			wantErr: true,
+			wantSub: "reload.sources",
+		},
+		{
+			name:    "reload.debounce_ms negative rejected",
+			mutate:  func(c *Config) { c.Reload.DebounceMs = -1 },
+			wantErr: true,
+			wantSub: "reload.debounce_ms",
+		},
+		{
+			name:   "reload empty sources allowed (static mode)",
+			mutate: func(c *Config) { c.Reload.Sources = nil; c.Reload.DebounceMs = 0 },
+		},
+		{
+			name:   "reload sighup and file allowed",
+			mutate: func(c *Config) { c.Reload.Sources = []string{"sighup", "file"} },
 		},
 		{
 			name:    "worker_pool.size zero",

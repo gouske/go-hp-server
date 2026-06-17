@@ -258,6 +258,7 @@ if err := http.ListenAndServe(":8080", nil); err != nil {
 |--------|------|
 | `github.com/rs/zerolog` | 구조화 로깅 |
 | `github.com/spf13/viper` | 설정 관리 |
+| `github.com/fsnotify/fsnotify` | 설정 파일 watch (P0-4 hot-reload, REV3-004) |
 | `github.com/prometheus/client_golang` | 메트릭 |
 | `github.com/sony/gobreaker` | Circuit Breaker |
 | `golang.org/x/time/rate` | Rate Limiting |

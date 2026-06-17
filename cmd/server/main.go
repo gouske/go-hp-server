@@ -25,6 +25,7 @@ import (
 	"github.com/gouske/go-hp-server/internal/health"
 	"github.com/gouske/go-hp-server/internal/logger"
 	"github.com/gouske/go-hp-server/internal/middleware"
+	"github.com/gouske/go-hp-server/internal/reload"
 	"github.com/gouske/go-hp-server/internal/server"
 )
 
@@ -78,6 +79,14 @@ func runCore(ctx context.Context, args []string) int {
 		return exitCodeError
 	}
 
+	// P0-4 FR-060f: logger.New 는 per-logger 레벨을 고정하지 않으므로 부팅 시 전역 레벨을
+	// 1회 설정한다. LevelSubscriber 를 재사용해 boot 적용과 hot-reload 경로를 단일화한다.
+	levelSub := logger.NewLevelSubscriber()
+	if err := levelSub.Apply(ctx, cfg); err != nil {
+		lg.Error().Err(err).Msg("set initial log level failed")
+		return exitCodeError
+	}
+
 	srv, err := server.New(cfg, lg)
 	if err != nil {
 		lg.Error().Err(err).Msg("server new failed")
@@ -97,8 +106,17 @@ func runCore(ctx context.Context, args []string) int {
 		lg.Error().Err(err).Msg("middleware access_log init failed")
 		return exitCodeError
 	}
+	// P0-4 FR-060g: 요청 단위 deadline 을 관리하는 RequestTimeout 미들웨어. rtCfg 는
+	// hot-reload Subscriber 로 등록되어 런타임에 cfg.Server.RequestTimeout 을 반영한다.
+	rtCfg, err := middleware.NewRequestTimeoutConfig(cfg.Server.RequestTimeout)
+	if err != nil {
+		lg.Error().Err(err).Msg("middleware request_timeout init failed")
+		return exitCodeError
+	}
+	timeoutMW := middleware.RequestTimeout(rtCfg)
 	register := func(pattern string, h http.Handler) error {
-		chained := middleware.Chain(h, reqMW, logMW)
+		// 체인 순서 고정: RequestID → AccessLog → RequestTimeout → 사용자 핸들러.
+		chained := middleware.Chain(h, reqMW, logMW, timeoutMW)
 		if err := srv.Handle(pattern, chained); err != nil {
 			return fmt.Errorf("register %q: %w", pattern, err)
 		}
@@ -129,9 +147,38 @@ func runCore(ctx context.Context, args []string) int {
 		return exitCodeError
 	}
 
+	// P0-4: 설정 hot-reload. Subscriber(log_level / request_timeout / graceful_shutdown_timeout)
+	// 를 등록하고 trigger 를 시작한다. ctx 취소 시 자동 Stop 되며, defer 로도 정리한다.
+	reloader, err := reload.NewReloader(*configPath, cfg.Reload, reload.WithErrorLogger(lg))
+	if err != nil {
+		lg.Error().Err(err).Msg("reloader init failed")
+		return exitCodeError
+	}
+	srvSub, err := server.NewServerSubscriber(srv)
+	if err != nil {
+		lg.Error().Err(err).Msg("server subscriber init failed")
+		return exitCodeError
+	}
+	for _, sub := range []reload.Subscriber{levelSub, rtCfg, srvSub} {
+		if err := reloader.Register(sub); err != nil {
+			lg.Error().Err(err).Str("subscriber", sub.Name()).Msg("reloader register failed")
+			return exitCodeError
+		}
+	}
+	if err := reloader.Start(ctx); err != nil {
+		lg.Error().Err(err).Msg("reloader start failed")
+		return exitCodeError
+	}
+	defer func() {
+		if err := reloader.Stop(); err != nil {
+			lg.Error().Err(err).Msg("reloader stop failed")
+		}
+	}()
+
 	lg.Info().
 		Str("host", cfg.Server.Host).
 		Int("port", cfg.Server.Port).
+		Strs("reload_sources", cfg.Reload.Sources).
 		Msg("server starting")
 
 	runErr := srv.Run(ctx)

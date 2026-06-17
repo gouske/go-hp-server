@@ -38,14 +38,23 @@ func WithWriter(w io.Writer) Option {
 // Level 은 debug|info|warn|error, Format 은 json|console 중 하나여야 하며,
 // 집합을 벗어나면 `logger new:` 접두 에러를 반환한다. panic 은 발생하지 않는다.
 // 반환된 로거는 타임스탬프 필드를 자동으로 포함한다.
+//
+// 레벨 필터링 정책 (P0-4 FR-060f / REV5-001): New 는 cfg.Level 의 유효성만 검증하고
+// per-logger 레벨로 고정하지 않는다. 실제 필터링은 zerolog 전역 레벨이 단독으로 결정하며,
+// 부팅 시 cmd/server 가 zerolog.SetGlobalLevel(cfg.Log.Level) 을 1회 호출하고, 런타임에는
+// logger.LevelSubscriber 가 hot-reload 로 전역 레벨을 갱신한다. per-logger 레벨을 고정하면
+// 전역 레벨을 완화(debug 방향)해도 무효화되므로(zerolog 는 더 엄격한 쪽을 따름) 제거했다.
 func New(cfg config.LogConfig, opts ...Option) (*zerolog.Logger, error) {
 	o := &options{writer: os.Stdout}
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(o)
 	}
 
-	level, err := parseLevel(cfg.Level)
-	if err != nil {
+	// 레벨은 유효성만 검증하고 per-logger 로 고정하지 않는다(전역 레벨이 필터링 담당).
+	if _, err := parseLevel(cfg.Level); err != nil {
 		return nil, fmt.Errorf("logger new: %w", err)
 	}
 	writer, err := wrapWriter(o.writer, cfg.Format)
@@ -54,7 +63,6 @@ func New(cfg config.LogConfig, opts ...Option) (*zerolog.Logger, error) {
 	}
 
 	logger := zerolog.New(writer).
-		Level(level).
 		With().
 		Timestamp().
 		Logger()
